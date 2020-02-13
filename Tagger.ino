@@ -13,18 +13,13 @@
 #define NUM_LEDS 8
 CRGB leds[NUM_LEDS];
 #define LED_PIN 6
-int ledCounter = 0;
-int dutyCycleCounter = 0;
-#define DUTY_CYCLE_COUNT 4
-#define DUTY_CYCLE_THRESHOLD 1
-#define LED_UPDATE_COUNT_PERIOD 50
 
 // ==============
 // IR State
 // ==============
 
 int RECV_PIN = 11;
-int RELAY_PIN = 4;
+//int RELAY_PIN = 4;
 
 IRrecv irrecv(RECV_PIN);
 IRsend irsend;
@@ -67,6 +62,7 @@ struct InputState {
   boolean triggerPulled;
   boolean resetGame;
   boolean hit;
+  byte hitDamage;
 };
 
 InputState inputState = { false, false, false };
@@ -74,6 +70,14 @@ InputState inputState = { false, false, false };
 // ==============
 // Stats
 // ==============
+
+struct Stats {
+  unsigned int hits;
+  unsigned int hitsIgnoredDuringCountdown;
+  unsigned int unknownIrPacket;
+};
+
+Stats stats;
 
 // ==============
 // Buttons
@@ -102,7 +106,7 @@ void dump(decode_results *results) {
     Serial.print(", ");
     Serial.println(results->bits, DEC);
   }
-  /*Serial.print("Raw (");
+  Serial.print("Raw (");
   Serial.print(count, DEC);
   Serial.print("): ");
 
@@ -115,14 +119,19 @@ void dump(decode_results *results) {
     }
     Serial.print(" ");
   }
-  Serial.println("");*/
+  Serial.println("");
 }
 
 void setup()
 {
-  pinMode(RELAY_PIN, OUTPUT);
-  pinMode(13, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT_PULLUP); //Button
+  //Cruft from relay - determine if needed
+  //pinMode(RELAY_PIN, OUTPUT);
+  //pinMode(13, OUTPUT);
+  
+  
+  // Setup Button Input
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  // Start the USB Serial
   Serial.begin(115200);
   Serial.println("Start");
   // Start the IR receiver
@@ -131,6 +140,10 @@ void setup()
   setup_pwmRead();  
   
   FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
+  //Duemilanove 5v regulator is only rated to 190mA
+  FastLED.setMaxPowerInVoltsAndMilliamps(5,100); 
+  
+  updateLedValuesNow();
 }
 
 void shoot(short team, short player, short damage) {
@@ -140,40 +153,40 @@ void shoot(short team, short player, short damage) {
   irsend.sendPHOENIX_LTX(data, 7);
 }
 
-
-
-void updateLeds() {
-  ledCounter += 1;
-  if (ledCounter > LED_UPDATE_COUNT_PERIOD) {
-    ledCounter = 0;
-    
-    dutyCycleCounter++;
-    if (dutyCycleCounter > DUTY_CYCLE_COUNT) {
-      dutyCycleCounter = 0;
-    }
-    boolean dutyCycle = dutyCycleCounter <= DUTY_CYCLE_THRESHOLD;
-    int healthPerLed = MAX_LIFE / NUM_LEDS;
-    for (int i = 0; i < NUM_LEDS; i++) {
-      if (!dutyCycle) {
-        leds[i] = CRGB::Black;
-        continue;
-      }
-      if (gameState.hitCountdown > 0) {
-        leds[i] = CRGB::Red;
-      } else if (i * healthPerLed < gameState.life) {
+//Manages led state
+void updateLedValues() {
+  int healthPerLed = MAX_LIFE / NUM_LEDS;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    //The order here defines precidence for which rule controls the output
+    if (gameState.life == 0) { //Player Death
+      leds[i] = CRGB::White;
+    } else if (gameState.hitCountdown > 0) { //Hit Indicator
+      leds[i] = CRGB::Red;
+    } else { //Show Health
+      if (i * healthPerLed < gameState.life) {
+        //TODO - Partial health can be indicated by blinking the last element
         leds[i] = CRGB::Green;
       } else {
         leds[i] = CRGB::Black;
       }
     }
-    FastLED.show();
   }
+}
+
+void updateLedValuesNow() {
+  updateLedValues();
+  FastLED.show();
 }
 
 void readInput() {
   //For now, a button simulates getting hit
-  int buttonValue = digitalRead(BUTTON_PIN);
-  inputState.hit = (buttonValue == 0);
+  //TODO - Pull in a debounce library for cleaning up this input
+  //for now the hit countdown hides it if it bounces
+  if (!inputState.hit) {
+    int buttonValue = digitalRead(BUTTON_PIN);
+    inputState.hit = (buttonValue == 0);
+    inputState.hitDamage = 1;
+  }
 }
 
 void updateGame() {
@@ -183,49 +196,89 @@ void updateGame() {
       //Only if we have recovered from the countdown can we be hit again
       gameState.life--;
       gameState.hitCountdown = HIT_COUNTDOWN_COUNT;
-      Serial.print("Hit, life: ");
+      stats.hits++;
+      Serial.print("Hit, remaining life: ");
       Serial.println(gameState.life, DEC);
+      updateLedValuesNow();
+    } else {
+      stats.hitsIgnoredDuringCountdown++;
     }
+    //We reset current input as we expect it to retrigger on the next hit
+    inputState.hit = 0;
   }
   if (gameState.hitCountdown > 0) {
     gameState.hitCountdown--;
+    if (gameState.hitCountdown == 0) {
+      updateLedValuesNow();
+    }
   }
 }
 
-void loop() {
+void readIrInput() {
   if (irrecv.decode(&results)) {
     //dump(&results);
     
+    //We only understand shots for now and we can just assume everything is all right
+     if (results.decode_type == PHOENIX_LTX && results.bits == 7) {
+       //https://executedata.blogspot.com/2010/09/lazertag-team-ops-packet-part-1.html
+       //[ 3 bits - zero ] [ 2 bits - team ] [ 2 bits - damage ]
+       // Team:
+       // 0x00 = Solo
+       // 0x01-0x03 = Team 1-3
+       // Damage:
+       // 0x00-0x03 = Damage 1-4 (3-4 are only usable by LTTO as Mega-Tag)
+       byte team = (results.value >> 2) & 0x3;
+       byte damage = (results.value >> 0) & 0x3;
+       //TODO - Clean up team detection
+       if (team == 0 && gameState.teamId == 0) {
+         //Solo
+         inputState.hit = 1;
+         inputState.hitDamage = damage + 1;
+       } else if (team != 0 && gameState.teamId != 0 && team != gameState.teamId) {
+         //We are not playing solo and not on the same team
+         inputState.hit = 1;
+         inputState.hitDamage = damage + 1;
+       }
+     } else {
+       stats.unknownIrPacket++;
+     }
     
     irrecv.enableIRIn();
     //Serial.print("Value: ");
     //Serial.println(results.value, BIN);
     
     irrecv.resume(); // Receive the next value
-  } else if (Serial.available() >= 2) {
-    byte high = Serial.read();
-    byte low = Serial.read();
     
-    byte count = (high >> 1) & 0xf;
-    byte type = (high >> 5) & 0x1;
-    short value = (short)low | (((short)high & 0x1) << 8);
-    
-    /*Serial.print("Recv: ");
-    Serial.print(value, HEX);
-    Serial.print(", ");
-    Serial.println(count, DEC);*/
-    if (type == 0x00) {
-      irsend.sendPHOENIX_LTX(value, count);
-    } else if (type == 0x01) {
-      irsend.sendLTTO(value, count);
-    }
-    
-    irrecv.enableIRIn();
-    irrecv.resume();
+     
   }
+}
+
+void loop() {
+//  if (Serial.available() >= 2) {
+//    byte high = Serial.read();
+//    byte low = Serial.read();
+//    
+//    byte count = (high >> 1) & 0xf;
+//    byte type = (high >> 5) & 0x1;
+//    short value = (short)low | (((short)high & 0x1) << 8);
+//    
+//    /*Serial.print("Recv: ");
+//    Serial.print(value, HEX);
+//    Serial.print(", ");
+//    Serial.println(count, DEC);*/
+//    if (type == 0x00) {
+//      irsend.sendPHOENIX_LTX(value, count);
+//    } else if (type == 0x01) {
+//      irsend.sendLTTO(value, count);
+//    }
+//    
+//    irrecv.enableIRIn();
+//    irrecv.resume();
+//  }
   
-  readInput();
+  readIrInput();
+  //readInput();
   updateGame();
   
-  updateLeds();
+  //updateLeds();
 }
