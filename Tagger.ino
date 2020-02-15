@@ -1,4 +1,6 @@
 /*
+ * Based on LazerTagHost by Alex Faucher
+ * https://github.com/afaucher/LazerTagHost
  * Based on IRremote by Ken Shirriff
  * http://arcfn.com
  */
@@ -11,8 +13,8 @@
 // ==============
 
 #define NUM_LEDS 8
-CRGB leds[NUM_LEDS];
 #define LED_PIN 6
+CRGB leds[NUM_LEDS];
 
 // ==============
 // IR State
@@ -36,7 +38,6 @@ decode_results results;
 //const int channels = 1;                   // specify the number of receiver channels
 //float RC_in[channels];                    // an array to store the calibrated input from receiver 
 
-
 // ==============
 // Game State
 // ==============
@@ -45,7 +46,7 @@ decode_results results;
 #define HIT_COUNTDOWN_COUNT 10000
 
 struct GameState {
-  unsigned int life; //[0-MAX_LIFE]
+  unsigned int life; //[0-MAX_LIFE] where 0 is dead
   //These are limited to ranges for LTTO/LTX
   byte teamId; //Solo: [0] Team: [1-3]
   byte playerId; //[0-7]
@@ -124,7 +125,7 @@ void dump(decode_results *results) {
 
 void setup()
 {
-  //Cruft from relay - determine if needed
+  //TODO: Cruft from relay - determine if needed
   //pinMode(RELAY_PIN, OUTPUT);
   //pinMode(13, OUTPUT);
   
@@ -140,7 +141,8 @@ void setup()
   setup_pwmRead();  
   
   FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
-  //Duemilanove 5v regulator is only rated to 190mA
+  //Duemilanove 5v regulator is only rated to 500mA on USB, which also powers the board.
+  //Keep a conservative limit here.
   FastLED.setMaxPowerInVoltsAndMilliamps(5,100); 
   
   updateLedValuesNow();
@@ -254,31 +256,8 @@ void readIrInput() {
 }
 
 void loop() {
-//  if (Serial.available() >= 2) {
-//    byte high = Serial.read();
-//    byte low = Serial.read();
-//    
-//    byte count = (high >> 1) & 0xf;
-//    byte type = (high >> 5) & 0x1;
-//    short value = (short)low | (((short)high & 0x1) << 8);
-//    
-//    /*Serial.print("Recv: ");
-//    Serial.print(value, HEX);
-//    Serial.print(", ");
-//    Serial.println(count, DEC);*/
-//    if (type == 0x00) {
-//      irsend.sendPHOENIX_LTX(value, count);
-//    } else if (type == 0x01) {
-//      irsend.sendLTTO(value, count);
-//    }
-//    
-//    irrecv.enableIRIn();
-//    irrecv.resume();
-//  }
   
   readIrInput();
   //readInput();
   updateGame();
-  
-  //updateLeds();
 }
