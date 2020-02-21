@@ -33,10 +33,19 @@ decode_results results;
 // ==============
 
 //https://create.arduino.cc/projecthub/kelvineyeone/read-pwm-decode-rc-receiver-input-and-apply-fail-safe-6b90eb
-//unsigned long now;                        // timing variables to update data at a regular interval                  
-//unsigned long rc_update;
-//const int channels = 1;                   // specify the number of receiver channels
-//float RC_in[channels];                    // an array to store the calibrated input from receiver 
+#define NUMBER_RC_CHANNELS 1
+#define TRIGGER_CHANNEL 0
+//I picked this without testing.  This largely depends on receiver
+//We will target the 'middle', 0% assuming a three position switch
+#define RECEIVER_TRIGGER_TOLERANCE_PERCENT 0.2f
+#define TRIGGER_RANGE_VALUE 0
+struct RcReceiver {
+  unsigned long now;                        // timing variables to update data at a regular interval                  
+  unsigned long rc_update;
+  float RC_in[NUMBER_RC_CHANNELS];                    // an array to store the calibrated input from receiver 
+};
+
+RcReceiver rcReceiver = {};
 
 // ==============
 // Game State
@@ -138,13 +147,13 @@ void setup()
   // Start the IR receiver
   irrecv.enableIRIn();
   // Start the PWM RC receiver
-  setup_pwmRead();  
-  
+  setup_pwmRead();
+  // Setup LEDs
   FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
+  setupLedValuesNow();
   //Duemilanove 5v regulator is only rated to 500mA on USB, which also powers the board.
   //Keep a conservative limit here.
   FastLED.setMaxPowerInVoltsAndMilliamps(5,100); 
-  
   updateLedValuesNow();
 }
 
@@ -168,6 +177,9 @@ void updateLedValues() {
       if (i * healthPerLed < gameState.life) {
         //TODO - Partial health can be indicated by blinking the last element
         leds[i] = CRGB::Green;
+      } else if (inputState.triggerPulled) {
+        //Give an indication while firing
+        leds[i] = CRGB::Blue;
       } else {
         leds[i] = CRGB::Black;
       }
@@ -175,12 +187,19 @@ void updateLedValues() {
   }
 }
 
+void setupLedValuesNow() {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = CRGB::Grey;
+  }
+  FastLED.show();
+}
+
 void updateLedValuesNow() {
   updateLedValues();
   FastLED.show();
 }
 
-void readInput() {
+void readButtonInput() {
   //For now, a button simulates getting hit
   //TODO - Pull in a debounce library for cleaning up this input
   //for now the hit countdown hides it if it bounces
@@ -255,9 +274,36 @@ void readIrInput() {
   }
 }
 
+void readRcInput() {
+  rcReceiver.now = millis();
+  if(RC_avail() || rcReceiver.now - rcReceiver.rc_update > 250) {   // if RC data is available or 25ms has passed since last update (adjust to be equal or greater than the frame rate of receiver)
+      
+      rcReceiver.rc_update = rcReceiver.now;                           
+      
+      //Note: This printing can break uploading somehow?  Uncommenting it causes upload to fail.
+      //print_RCpwm();                        // uncommment to print raw data from receiver to serial
+      
+      for (int i = 0; i < NUMBER_RC_CHANNELS; i++){       // run through each RC channel
+        int ch = i + 1;
+        
+        rcReceiver.RC_in[i] = RC_decode(ch);             // decode receiver channel and apply failsafe
+        
+        //(rcReceiver.RC_in[i]);   // uncomment to print calibrated receiver input (+-100%) to serial       
+      }
+      //Serial.println();                       // uncomment when printing calibrated receiver input to serial.
+    }
+    boolean triggerWasPulled = inputState.triggerPulled;
+    inputState.triggerPulled = TRIGGER_RANGE_VALUE - RECEIVER_TRIGGER_TOLERANCE_PERCENT < rcReceiver.RC_in[TRIGGER_CHANNEL]
+        && rcReceiver.RC_in[TRIGGER_CHANNEL] < TRIGGER_RANGE_VALUE + RECEIVER_TRIGGER_TOLERANCE_PERCENT;
+    if (triggerWasPulled != inputState.triggerPulled) {
+      updateLedValuesNow();
+    }
+}
+
 void loop() {
   
   readIrInput();
-  //readInput();
+  //readButtonInput();
+  readRcInput();
   updateGame();
 }
