@@ -20,8 +20,9 @@ CRGB leds[NUM_LEDS];
 // IR State
 // ==============
 
-int RECV_PIN = 11;
+#define RECV_PIN 11
 //int RELAY_PIN = 4;
+#define IR_TX_PIN 3
 
 IRrecv irrecv(RECV_PIN);
 IRsend irsend;
@@ -39,9 +40,10 @@ decode_results results;
 //We will target the 'middle', 0% assuming a three position switch
 #define RECEIVER_TRIGGER_TOLERANCE_PERCENT 0.2f
 #define TRIGGER_RANGE_VALUE 0
+#define RECEIVER_UPDATE_PERIOD_MILLIS 100
+
 struct RcReceiver {
-  unsigned long now;                        // timing variables to update data at a regular interval                  
-  unsigned long rc_update;
+  uint32_t rc_update;
   float RC_in[NUMBER_RC_CHANNELS];                    // an array to store the calibrated input from receiver 
 };
 
@@ -52,17 +54,22 @@ RcReceiver rcReceiver = {};
 // ==============
 
 #define MAX_LIFE 16
+//TODO - Count need to be switched to millis
 #define HIT_COUNTDOWN_COUNT 10000
+#define MAX_AMMO 50
+#define SHOT_COOLDOWN_MILLIS 1000
 
 struct GameState {
-  unsigned int life; //[0-MAX_LIFE] where 0 is dead
+  uint8_t life; //[0-MAX_LIFE] where 0 is dead
   //These are limited to ranges for LTTO/LTX
-  byte teamId; //Solo: [0] Team: [1-3]
-  byte playerId; //[0-7]
-  unsigned int hitCountdown; //If > 0, we have been hit
+  uint8_t teamId; //Solo: [0] Team: [1-3]
+  uint8_t playerId; //[0-7]
+  uint16_t hitCountdown; //If > 0, we have been hit
+  uint8_t ammo;
+  uint32_t lastShotFiredTimeMillis;
 };
 
-GameState gameState = { MAX_LIFE, 0, 0, 0 };
+GameState gameState = { MAX_LIFE, 0, 0, 0, MAX_AMMO };
 
 // ==============
 // Input State
@@ -72,7 +79,7 @@ struct InputState {
   boolean triggerPulled;
   boolean resetGame;
   boolean hit;
-  byte hitDamage;
+  uint8_t hitDamage;
 };
 
 InputState inputState = { false, false, false };
@@ -82,9 +89,11 @@ InputState inputState = { false, false, false };
 // ==============
 
 struct Stats {
-  unsigned int hits;
-  unsigned int hitsIgnoredDuringCountdown;
-  unsigned int unknownIrPacket;
+  uint16_t hits;
+  uint16_t hitsIgnoredDuringCountdown;
+  uint16_t unknownIrPacket;
+  uint16_t ledUpdates;
+  uint16_t shotsFired;
 };
 
 Stats stats;
@@ -93,7 +102,8 @@ Stats stats;
 // Buttons
 // ==============
 
-#define BUTTON_PIN 7
+#define HIT_BUTTON_PIN 7
+#define TRIGGER_BUTTON_PIN 8
 
 // Dumps out the decode_results structure.
 // Call this after IRrecv::decode()
@@ -101,35 +111,35 @@ Stats stats;
 //void dump(void *v) {
 //  decode_results *results = (decode_results *)v
 void dump(decode_results *results) {
-  int count = results->rawlen;
+  uint8_t count = results->rawlen;
   if (results->decode_type == UNKNOWN) {
-    Serial.println("Could not decode message");
+    Serial.println(F("Could not decode message"));
   } 
   else {
     if (results->decode_type == PHOENIX_LTX) {
-      Serial.print("LTX: ");
+      Serial.print(F("LTX: "));
     }
     else if (results->decode_type == LAZER_TAG_TEAM_OPS) {
-      Serial.print("LTTO: ");
+      Serial.print(F("LTTO: "));
     }
     Serial.print(results->value, HEX);
-    Serial.print(", ");
+    Serial.print(F(", "));
     Serial.println(results->bits, DEC);
   }
-  Serial.print("Raw (");
+  Serial.print(F("Raw ("));
   Serial.print(count, DEC);
-  Serial.print("): ");
+  Serial.print(F("): "));
 
-  for (int i = 0; i < count; i++) {
+  for (uint8_t i = 0; i < count; i++) {
     if ((i % 2) == 1) {
       Serial.print(results->rawbuf[i]*USECPERTICK, DEC);
     } 
     else {
       Serial.print(-(int)results->rawbuf[i]*USECPERTICK, DEC);
     }
-    Serial.print(" ");
+    Serial.print(F(" "));
   }
-  Serial.println("");
+  Serial.println();
 }
 
 void setup()
@@ -138,12 +148,16 @@ void setup()
   //pinMode(RELAY_PIN, OUTPUT);
   //pinMode(13, OUTPUT);
   
+  //Start IR TX
+  pinMode(IR_TX_PIN, OUTPUT);
+  digitalWrite(IR_TX_PIN, LOW);
   
   // Setup Button Input
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(HIT_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(TRIGGER_BUTTON_PIN, INPUT_PULLUP);
   // Start the USB Serial
   Serial.begin(115200);
-  Serial.println("Start");
+  Serial.println(F("Start"));
   // Start the IR receiver
   irrecv.enableIRIn();
   // Start the PWM RC receiver
@@ -153,21 +167,24 @@ void setup()
   setupLedValuesNow();
   //Duemilanove 5v regulator is only rated to 500mA on USB, which also powers the board.
   //Keep a conservative limit here.
-  FastLED.setMaxPowerInVoltsAndMilliamps(5,100); 
+  FastLED.setMaxPowerInVoltsAndMilliamps(5, 100); 
   updateLedValuesNow();
 }
 
-void shoot(short team, short player, short damage) {
-  short data = ((team & 0x03) << 5)
+void shoot(uint16_t team, uint16_t player, uint16_t damage) {
+  //Damage is encoded 0-3 for damage range [1-4]
+  damage--;
+  uint16_t data = ((team & 0x03) << 5)
       | ((player & 0x07) << 2)
       | (damage & 0x02);
-  irsend.sendPHOENIX_LTX(data, 7);
+//  irsend.sendPHOENIX_LTX(data, 7);
+  Serial.println(F("Fire"));
 }
 
 //Manages led state
 void updateLedValues() {
-  int healthPerLed = MAX_LIFE / NUM_LEDS;
-  for (int i = 0; i < NUM_LEDS; i++) {
+  uint8_t healthPerLed = MAX_LIFE / NUM_LEDS;
+  for (uint8_t i = 0; i < NUM_LEDS; i++) {
     //The order here defines precidence for which rule controls the output
     if (gameState.life == 0) { //Player Death
       leds[i] = CRGB::White;
@@ -179,7 +196,8 @@ void updateLedValues() {
         leds[i] = CRGB::Green;
       } else if (inputState.triggerPulled) {
         //Give an indication while firing
-        leds[i] = CRGB::Blue;
+        //TODO - This should move over to the 'ammo' LED once we define that
+        leds[i] = CRGB(0,0,100);
       } else {
         leds[i] = CRGB::Black;
       }
@@ -188,15 +206,17 @@ void updateLedValues() {
 }
 
 void setupLedValuesNow() {
-  for (int i = 0; i < NUM_LEDS; i++) {
+  for (uint8_t i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB::Grey;
   }
   FastLED.show();
+  stats.ledUpdates++;
 }
 
 void updateLedValuesNow() {
   updateLedValues();
   FastLED.show();
+  stats.ledUpdates++;
 }
 
 void readButtonInput() {
@@ -204,13 +224,18 @@ void readButtonInput() {
   //TODO - Pull in a debounce library for cleaning up this input
   //for now the hit countdown hides it if it bounces
   if (!inputState.hit) {
-    int buttonValue = digitalRead(BUTTON_PIN);
+    int buttonValue = digitalRead(HIT_BUTTON_PIN);
     inputState.hit = (buttonValue == 0);
     inputState.hitDamage = 1;
   }
+  if (!inputState.triggerPulled) {
+    int buttonValue = digitalRead(TRIGGER_BUTTON_PIN);
+    inputState.triggerPulled = (buttonValue == 0);
+  }
 }
 
-void updateGame() {
+void updateGame(uint32_t now) {
+  boolean requiresUpdate = false;
   if (inputState.hit) {
     if (gameState.life > 0 && gameState.hitCountdown == 0) {
       //We must be alive to be hit
@@ -218,8 +243,8 @@ void updateGame() {
       gameState.life--;
       gameState.hitCountdown = HIT_COUNTDOWN_COUNT;
       stats.hits++;
-      Serial.print("Hit, remaining life: ");
-      Serial.println(gameState.life, DEC);
+      //Serial.print(F("Hit, remaining life: "));
+      //Serial.println(gameState.life, DEC);
       updateLedValuesNow();
     } else {
       stats.hitsIgnoredDuringCountdown++;
@@ -230,8 +255,28 @@ void updateGame() {
   if (gameState.hitCountdown > 0) {
     gameState.hitCountdown--;
     if (gameState.hitCountdown == 0) {
-      updateLedValuesNow();
+      requiresUpdate = true;
     }
+  }
+  if (inputState.triggerPulled) {
+    //While the trigger is pulled, we will not fire faster then SHOT_COOLDOWN_MILLIS
+    if (gameState.lastShotFiredTimeMillis < now - SHOT_COOLDOWN_MILLIS
+        && gameState.ammo > 0) {
+      shoot(gameState.playerId, gameState.teamId, 1);
+      gameState.lastShotFiredTimeMillis = now;
+      gameState.ammo--;
+      stats.shotsFired++;
+      requiresUpdate = true;
+      inputState.triggerPulled = false;
+    }
+  } else if (gameState.lastShotFiredTimeMillis > 0) {
+    //Trigger has been released.  If the trigger is pulled again you can fire again.
+    //The main reason to do this is to detect when firing stops so the LED indication can be updated.
+    gameState.lastShotFiredTimeMillis = 0;
+    requiresUpdate = true;
+  }
+  if (requiresUpdate) {
+    updateLedValuesNow();
   }
 }
 
@@ -248,8 +293,8 @@ void readIrInput() {
        // 0x01-0x03 = Team 1-3
        // Damage:
        // 0x00-0x03 = Damage 1-4 (3-4 are only usable by LTTO as Mega-Tag)
-       byte team = (results.value >> 2) & 0x3;
-       byte damage = (results.value >> 0) & 0x3;
+       uint8_t team = (results.value >> 2) & 0x3;
+       uint8_t damage = (results.value >> 0) & 0x3;
        //TODO - Clean up team detection
        if (team == 0 && gameState.teamId == 0) {
          //Solo
@@ -265,7 +310,7 @@ void readIrInput() {
      }
     
     irrecv.enableIRIn();
-    //Serial.print("Value: ");
+    //Serial.print(F("Value: "));
     //Serial.println(results.value, BIN);
     
     irrecv.resume(); // Receive the next value
@@ -274,17 +319,16 @@ void readIrInput() {
   }
 }
 
-void readRcInput() {
-  rcReceiver.now = millis();
-  if(RC_avail() || rcReceiver.now - rcReceiver.rc_update > 250) {   // if RC data is available or 25ms has passed since last update (adjust to be equal or greater than the frame rate of receiver)
+void readRcInput(uint32_t now) {
+  if(RC_avail() || now - rcReceiver.rc_update > RECEIVER_UPDATE_PERIOD_MILLIS) {   // if RC data is available or 25ms has passed since last update (adjust to be equal or greater than the frame rate of receiver)
       
-      rcReceiver.rc_update = rcReceiver.now;                           
+      rcReceiver.rc_update = now;                           
       
       //Note: This printing can break uploading somehow?  Uncommenting it causes upload to fail.
       //print_RCpwm();                        // uncommment to print raw data from receiver to serial
       
-      for (int i = 0; i < NUMBER_RC_CHANNELS; i++){       // run through each RC channel
-        int ch = i + 1;
+      for (uint8_t i = 0; i < NUMBER_RC_CHANNELS; i++){       // run through each RC channel
+        uint8_t ch = i + 1;
         
         rcReceiver.RC_in[i] = RC_decode(ch);             // decode receiver channel and apply failsafe
         
@@ -295,15 +339,12 @@ void readRcInput() {
     boolean triggerWasPulled = inputState.triggerPulled;
     inputState.triggerPulled = TRIGGER_RANGE_VALUE - RECEIVER_TRIGGER_TOLERANCE_PERCENT < rcReceiver.RC_in[TRIGGER_CHANNEL]
         && rcReceiver.RC_in[TRIGGER_CHANNEL] < TRIGGER_RANGE_VALUE + RECEIVER_TRIGGER_TOLERANCE_PERCENT;
-    if (triggerWasPulled != inputState.triggerPulled) {
-      updateLedValuesNow();
-    }
 }
 
 void loop() {
-  
+  uint32_t now = millis();
   readIrInput();
-  //readButtonInput();
-  readRcInput();
-  updateGame();
+  readButtonInput();
+  readRcInput(now);
+  updateGame(now);
 }

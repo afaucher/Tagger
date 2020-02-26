@@ -147,7 +147,7 @@
  */
  
 // PWM input pins, any of the following pins can be used: digital 0 - 13 or analog A0 - A5 
-
+//TODO - Refactor to make library input
 const int pwmPIN[]={5}; // an array to identify the PWM input pins (the array can be any length) 
                                   // first pin is channel 1, second is channel 2...etc
 
@@ -162,13 +162,18 @@ int RC_inputs = 0;                // The number of pins in pwmPIN that are conne
 
 //SANWA 6CH 40MHz with corona RP6D1  
 //                THR     RUD     PIT     BAL     SWITCH  SLIDER
-int RC_min[6] = { 988,    1060,   976,    960,    1056,   1116};
-int RC_mid[6] = { 1472,   1446,   1424,   1398,   1374,   1460};
-int RC_max[6] = { 1800,   1816,   1796,   1764,   1876,   1796};
+//TODO - Calibrate
+//int RC_min[6] = { 988,    1060,   976,    960,    1056,   1116};
+//int RC_mid[6] = { 1472,   1446,   1424,   1398,   1374,   1460};
+//int RC_max[6] = { 1800,   1816,   1796,   1764,   1876,   1796};
+int RC_min[] = {};
+int RC_mid[] = {};
+int RC_max[] = {};
 
 // fail safe positions
-
-float RC_failsafe[] = {0.00, 0.00, 1, 0.00, -0.25, 0.00};
+//TODO - Calibrate
+//float RC_failsafe[] = {0.00, 0.00, 1, 0.00, -0.25, 0.00};
+float RC_failsafe[] = {};
    
 // enter a failsafe position (in the range of -+1) for each RC channel in case radio signal is lost
 // if the array is the incorrect length for the number of RC channels, the failsafe will default to neutral i.e. 0. 
@@ -432,6 +437,7 @@ boolean FAILSAFE(int CH){
  *  Quick print function of Rx channel input
  */
 
+#ifdef ENABLE_PWMREAD_PRINT
 void print_RCpwm(){                             // display the raw RC Channel PWM Inputs
   for (int i = 0; i < RC_inputs; i++){
     //Serial.print(" ch");Serial.print(i+1);
@@ -445,11 +451,13 @@ void print_RCpwm(){                             // display the raw RC Channel PW
 void print_decimal2percentage(float dec){
   int pc = dec*100;
   // the number and text will take up 6 charactors i.e ___3%_ or -100%_
-  if (pc >= 0) Serial.print(" ");
-  if (abs(pc) < 100) Serial.print(" ");
-  if (abs(pc) < 10) Serial.print(" ");
-  Serial.print(" ");Serial.print(pc);Serial.print("% ");
+  char space[] = " ";
+  if (pc >= 0) Serial.print(space);
+  if (abs(pc) < 100) Serial.print(space);
+  if (abs(pc) < 10) Serial.print(space);
+  Serial.print(space);Serial.print(pc);Serial.print("% ");
 }
+#endif
 
 /*
  * GENERIC PWM FUNCTIONS
