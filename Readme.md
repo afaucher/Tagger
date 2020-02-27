@@ -12,13 +12,13 @@ Tagger is compatible but not affiliated with Nerf and Tiger brand Phoenix LTX gu
 
 The wiring is documented in the Fritzing project file.
 
-![Breadboard](/Fritzing/Fritzing Tagger Project_bb.png)
+![Breadboard](/Fritzing/Fritzing%20Tagger%20Project%20bb.png)
 
 # Installation
 
 This project has not been tested on an RC plane yet.  The intention is the following layout:
 
-![Breadboard](/documentation/Component Mounting.png)
+![Layout](/documentation/Component%20Mounting.png)
 
 # Current Status
 
