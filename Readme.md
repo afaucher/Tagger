@@ -12,7 +12,7 @@ Tagger is compatible but not affiliated with Nerf and Tiger brand Phoenix LTX gu
 
 The wiring is documented in the Fritzing project file.
 
-![Breadboard](/Fritzing/Fritzing%20Tagger%20Project%20bb.png)
+![Breadboard](/Fritzing/Fritzing%20Tagger%20Project_bb.png)
 
 # Installation
 
