@@ -20,8 +20,9 @@ CRGB leds[NUM_LEDS];
 // IR State
 // ==============
 
-#define RECV_PIN 11
+#define RECV_PIN 4
 //int RELAY_PIN = 4;
+//Note: This pin is hardcoded into IRRemote
 #define IR_TX_PIN 3
 
 IRrecv irrecv(RECV_PIN);
@@ -39,8 +40,9 @@ decode_results results;
 //I picked this without testing.  This largely depends on receiver
 //We will target the 'middle', 0% assuming a three position switch
 #define RECEIVER_TRIGGER_TOLERANCE_PERCENT 0.2f
-#define TRIGGER_RANGE_VALUE 0
+#define TRIGGER_RANGE_VALUE 0.5f
 #define RECEIVER_UPDATE_PERIOD_MILLIS 100
+//Note: Pin 5 is hardcoded into pwmread_rcfailsafe
 
 struct RcReceiver {
   uint32_t rc_update;
@@ -102,8 +104,8 @@ Stats stats;
 // Buttons
 // ==============
 
-#define HIT_BUTTON_PIN 7
-#define TRIGGER_BUTTON_PIN 8
+#define HIT_BUTTON_PIN A0
+#define TRIGGER_BUTTON_PIN A1
 
 // Dumps out the decode_results structure.
 // Call this after IRrecv::decode()
@@ -177,8 +179,10 @@ void shoot(uint16_t team, uint16_t player, uint16_t damage) {
   uint16_t data = ((team & 0x03) << 5)
       | ((player & 0x07) << 2)
       | (damage & 0x02);
-//  irsend.sendPHOENIX_LTX(data, 7);
-  Serial.println(F("Fire"));
+  irsend.sendPHOENIX_LTX(data, 7);
+  irrecv.enableIRIn();
+  irrecv.resume();
+//  Serial.println(F("Fire"));
 }
 
 //Manages led state
@@ -190,14 +194,14 @@ void updateLedValues() {
       leds[i] = CRGB::White;
     } else if (gameState.hitCountdown > 0) { //Hit Indicator
       leds[i] = CRGB::Red;
-    } else { //Show Health
-      if (i * healthPerLed < gameState.life) {
-        //TODO - Partial health can be indicated by blinking the last element
-        leds[i] = CRGB::Green;
-      } else if (inputState.triggerPulled) {
+    } else if (gameState.lastShotFiredTimeMillis > 0) { //Shot Indicator
         //Give an indication while firing
         //TODO - This should move over to the 'ammo' LED once we define that
         leds[i] = CRGB(0,0,100);
+    } else { //Show Health
+      if (i * healthPerLed < gameState.life) {
+        //Note: Partial health can be indicated by blinking the last element
+        leds[i] = CRGB::Green;
       } else {
         leds[i] = CRGB::Black;
       }
@@ -332,11 +336,10 @@ void readRcInput(uint32_t now) {
         
         rcReceiver.RC_in[i] = RC_decode(ch);             // decode receiver channel and apply failsafe
         
-        //(rcReceiver.RC_in[i]);   // uncomment to print calibrated receiver input (+-100%) to serial       
+        //Serial.println(rcReceiver.RC_in[i]);   // uncomment to print calibrated receiver input (+-100%) to serial       
       }
       //Serial.println();                       // uncomment when printing calibrated receiver input to serial.
     }
-    boolean triggerWasPulled = inputState.triggerPulled;
     inputState.triggerPulled = TRIGGER_RANGE_VALUE - RECEIVER_TRIGGER_TOLERANCE_PERCENT < rcReceiver.RC_in[TRIGGER_CHANNEL]
         && rcReceiver.RC_in[TRIGGER_CHANNEL] < TRIGGER_RANGE_VALUE + RECEIVER_TRIGGER_TOLERANCE_PERCENT;
 }
@@ -344,7 +347,7 @@ void readRcInput(uint32_t now) {
 void loop() {
   uint32_t now = millis();
   readIrInput();
-  readButtonInput();
+  //readButtonInput();
   readRcInput(now);
   updateGame(now);
 }
