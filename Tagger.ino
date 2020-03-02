@@ -7,6 +7,9 @@
 
 #include <IRremote.h>
 #include <FastLED.h>
+// https://github.com/thomasfredericks/Bounce2
+#include <Bounce2.h>
+
 
 // ==============
 // LED Indicators
@@ -21,7 +24,6 @@ CRGB leds[NUM_LEDS];
 // ==============
 
 #define RECV_PIN 4
-//int RELAY_PIN = 4;
 //Note: This pin is hardcoded into IRRemote
 #define IR_TX_PIN 3
 
@@ -37,12 +39,11 @@ decode_results results;
 //https://create.arduino.cc/projecthub/kelvineyeone/read-pwm-decode-rc-receiver-input-and-apply-fail-safe-6b90eb
 #define NUMBER_RC_CHANNELS 1
 #define TRIGGER_CHANNEL 0
-//I picked this without testing.  This largely depends on receiver
-//We will target the 'middle', 0% assuming a three position switch
+//Setup: You must adjust the range/tolerance value for the channel you choose.
 #define RECEIVER_TRIGGER_TOLERANCE_PERCENT 0.2f
 #define TRIGGER_RANGE_VALUE 0.5f
 #define RECEIVER_UPDATE_PERIOD_MILLIS 100
-//Note: Pin 5 is hardcoded into pwmread_rcfailsafe
+//Note: Pin 5 is hardcoded in pwmread_rcfailsafe
 
 struct RcReceiver {
   uint32_t rc_update;
@@ -68,7 +69,7 @@ struct GameState {
   uint8_t playerId; //[0-7]
   uint16_t hitCountdown; //If > 0, we have been hit
   uint8_t ammo;
-  uint32_t lastShotFiredTimeMillis;
+  uint32_t lastShotFiredTimeMillis; //Zero if not in cooldown
 };
 
 GameState gameState = { MAX_LIFE, 0, 0, 0, MAX_AMMO };
@@ -106,6 +107,14 @@ Stats stats;
 
 #define HIT_BUTTON_PIN A0
 #define TRIGGER_BUTTON_PIN A1
+#define DEBOUNCE_INTERVAL_MS 100
+
+struct Buttons {
+  Bounce hitButton;
+  Bounce triggerButton;
+};
+
+Buttons buttons;
 
 // Dumps out the decode_results structure.
 // Call this after IRrecv::decode()
@@ -146,17 +155,16 @@ void dump(decode_results *results) {
 
 void setup()
 {
-  //TODO: Cruft from relay - determine if needed
-  //pinMode(RELAY_PIN, OUTPUT);
-  //pinMode(13, OUTPUT);
-  
   //Start IR TX
   pinMode(IR_TX_PIN, OUTPUT);
   digitalWrite(IR_TX_PIN, LOW);
   
   // Setup Button Input
-  pinMode(HIT_BUTTON_PIN, INPUT_PULLUP);
-  pinMode(TRIGGER_BUTTON_PIN, INPUT_PULLUP);
+  buttons.hitButton.attach(HIT_BUTTON_PIN, INPUT_PULLUP);
+  buttons.hitButton.interval(DEBOUNCE_INTERVAL_MS);
+  buttons.triggerButton.attach(TRIGGER_BUTTON_PIN, INPUT_PULLUP);
+  buttons.triggerButton.interval(DEBOUNCE_INTERVAL_MS);
+  
   // Start the USB Serial
   Serial.begin(115200);
   Serial.println(F("Start"));
@@ -182,7 +190,6 @@ void shoot(uint16_t team, uint16_t player, uint16_t damage) {
   irsend.sendPHOENIX_LTX(data, 7);
   irrecv.enableIRIn();
   irrecv.resume();
-//  Serial.println(F("Fire"));
 }
 
 //Manages led state
@@ -194,7 +201,7 @@ void updateLedValues() {
       leds[i] = CRGB::White;
     } else if (gameState.hitCountdown > 0) { //Hit Indicator
       leds[i] = CRGB::Red;
-    } else if (gameState.lastShotFiredTimeMillis > 0) { //Shot Indicator
+    } else if (gameState.lastShotFiredTimeMillis > 0 && gameState.ammo > 0) { //Shot Indicator
         //Give an indication while firing
         //TODO - This should move over to the 'ammo' LED once we define that
         leds[i] = CRGB(0,0,100);
@@ -224,17 +231,15 @@ void updateLedValuesNow() {
 }
 
 void readButtonInput() {
-  //For now, a button simulates getting hit
-  //TODO - Pull in a debounce library for cleaning up this input
-  //for now the hit countdown hides it if it bounces
+  //A button can simulate getting hit for debugging
   if (!inputState.hit) {
-    int buttonValue = digitalRead(HIT_BUTTON_PIN);
-    inputState.hit = (buttonValue == 0);
+    buttons.hitButton.update();
+    inputState.hit |= !buttons.hitButton.read();
     inputState.hitDamage = 1;
   }
   if (!inputState.triggerPulled) {
-    int buttonValue = digitalRead(TRIGGER_BUTTON_PIN);
-    inputState.triggerPulled = (buttonValue == 0);
+    buttons.triggerButton.update();
+    inputState.triggerPulled |= !buttons.triggerButton.read();
   }
 }
 
@@ -249,12 +254,12 @@ void updateGame(uint32_t now) {
       stats.hits++;
       //Serial.print(F("Hit, remaining life: "));
       //Serial.println(gameState.life, DEC);
-      updateLedValuesNow();
+      requiresUpdate = true;
     } else {
       stats.hitsIgnoredDuringCountdown++;
     }
     //We reset current input as we expect it to retrigger on the next hit
-    inputState.hit = 0;
+    inputState.hit = false;
   }
   if (gameState.hitCountdown > 0) {
     gameState.hitCountdown--;
@@ -302,11 +307,11 @@ void readIrInput() {
        //TODO - Clean up team detection
        if (team == 0 && gameState.teamId == 0) {
          //Solo
-         inputState.hit = 1;
+         inputState.hit |= true;
          inputState.hitDamage = damage + 1;
        } else if (team != 0 && gameState.teamId != 0 && team != gameState.teamId) {
          //We are not playing solo and not on the same team
-         inputState.hit = 1;
+         inputState.hit |= true;
          inputState.hitDamage = damage + 1;
        }
      } else {
@@ -340,14 +345,14 @@ void readRcInput(uint32_t now) {
       }
       //Serial.println();                       // uncomment when printing calibrated receiver input to serial.
     }
-    inputState.triggerPulled = TRIGGER_RANGE_VALUE - RECEIVER_TRIGGER_TOLERANCE_PERCENT < rcReceiver.RC_in[TRIGGER_CHANNEL]
+    inputState.triggerPulled |= TRIGGER_RANGE_VALUE - RECEIVER_TRIGGER_TOLERANCE_PERCENT < rcReceiver.RC_in[TRIGGER_CHANNEL]
         && rcReceiver.RC_in[TRIGGER_CHANNEL] < TRIGGER_RANGE_VALUE + RECEIVER_TRIGGER_TOLERANCE_PERCENT;
 }
 
 void loop() {
   uint32_t now = millis();
   readIrInput();
-  //readButtonInput();
+  readButtonInput();
   readRcInput(now);
   updateGame(now);
 }
