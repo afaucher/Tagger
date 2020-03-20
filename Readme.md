@@ -97,7 +97,7 @@ Additional Thanks:
 * Kelvin Nelson for his PWM decoding code: https://create.arduino.cc/projecthub/kelvineyeone/read-pwm-decode-rc-receiver-input-and-apply-fail-safe-6b90eb
 * FAST LED project
 * Sparkfun for their great tutorials & good selection of Fritzing parts
-
+* Ssaggers on Thingiverse for the inspiration on the lens mounting: [Thingiverse](https://www.thingiverse.com/thing:454862), [Blog](https://teslaandi.wordpress.com/2014/09/29/databullets-2-laser-tagger-handgun-mark-1/)
 
 
 
